@@ -1,0 +1,7 @@
+streamlit
+plotly
+pandas
+joblib==1.4.2
+scikit-learn
+faker
+matplotlib
