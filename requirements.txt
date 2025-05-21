@@ -5,3 +5,5 @@ joblib==1.4.2
 scikit-learn
 faker
 matplotlib
+folium
+streamlit_folium

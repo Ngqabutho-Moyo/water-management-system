@@ -1,3 +1,4 @@
+from pathlib import Path  # Changed from matplotlib.path
 import pandas as pd
 import numpy as np
 from sklearn.model_selection import train_test_split
@@ -8,105 +9,111 @@ import joblib
 import matplotlib.pyplot as plt
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import classification_report, confusion_matrix
+from sklearn.pipeline import make_pipeline
+from sklearn.compose import ColumnTransformer
+from sklearn.preprocessing import OneHotEncoder
+from sklearn.model_selection import cross_val_score
 
 fake = Faker()
 
+# Harare bounding coordinates
+HARARE_BOUNDS = {
+    'min_lat': -17.93,
+    'max_lat': -17.70,
+    'min_lon': 30.95,
+    'max_lon': 31.15
+}
+
+ROOT = Path(r'C:\Users\Ngqabutho Moyo\Documents\Extra Curriculars\Leak Detection (Anesu)\Streamlit dashboard\app')
+
 def generate_water_data(num_samples=1000):
+    """Generate synthetic water data with spatial features"""
     data = []
-    base_pressure = 3.2  # Mean pressure (bar)
-    base_flow = 125.0    # Mean flow rate (L/s)
-    base_temp = 17.4     # Mean temperature (°C)
+    base_pressure = 3.2
+    base_flow = 125.0
+    base_temp = 17.4
+    
+    pipe_materials = ['PVC', 'Cast Iron', 'HDPE', 'Galvanized Iron', 'Asbestos Cement']
+    material_probs = [0.5, 0.2, 0.2, 0.05, 0.05]
     
     for _ in range(num_samples):
-        # Simulate normal fluctuations
-        pressure = np.random.normal(base_pressure, 0.5)
-        flow_rate = np.random.normal(base_flow, 44.0)
-        temp = np.random.normal(base_temp, 4.3)
+        lat = np.random.uniform(HARARE_BOUNDS['min_lat'], HARARE_BOUNDS['max_lat'])
+        lon = np.random.uniform(HARARE_BOUNDS['min_lon'], HARARE_BOUNDS['max_lon'])
         
-        # Introduce leaks/bursts (rare events)
-        leak = 1 if np.random.random() < 0.02 else 0
-        burst = 1 if np.random.random() < 0.01 else 0
+        pressure = np.clip(np.random.normal(base_pressure, 0.5), 0.9, 4.0)
+        flow_rate = np.clip(np.random.normal(base_flow, 44.0), 50.0, 330.0)
+        temp = np.clip(np.random.normal(base_temp, 4.3), 10.0, 25.0)
         
-        # Simulate sensor noise
+        risk_factor = 1 + (lat + 17.8) * 2
+        leak = int(np.random.random() < (0.02 * risk_factor))
+        burst = int(np.random.random() < (0.01 * risk_factor))
+        
         if leak:
-            pressure *= 0.8  # Pressure drops during leaks
-            flow_rate *= 1.2  # Flow increases due to leakage
-        
+            pressure *= 0.8
+            flow_rate *= 1.2
         if burst:
-            pressure *= 0.5  # Severe drop
-            flow_rate *= 1.5  # Big spike
+            pressure *= 0.5
+            flow_rate *= 1.5
             
         data.append({
             "timestamp": datetime.now() - timedelta(minutes=np.random.randint(0, 1440)),
-            "pressure": max(0.9, min(4.0, pressure)),  # Clamp to realistic range
-            "flow_rate": max(50.0, min(330.0, flow_rate)),
-            "temperature": max(10.0, min(25.0, temp)),
+            "pressure": pressure,
+            "flow_rate": flow_rate,
+            "temperature": temp,
+            "latitude": lat,
+            "longitude": lon,
+            "pipe_age": np.random.randint(0, 30),
+            "pipe_material": np.random.choice(pipe_materials, p=material_probs),
             "leak_status": leak,
-            "burst_status": burst
+            "burst_status": burst,
+            "pipe_id": f"ZW-{np.random.randint(1000, 9999)}"
         })
     
     return pd.DataFrame(data)
 
-df = generate_water_data(10000)
-df.to_csv('datasets/water_data.csv', index=False)
-
-def load_and_preprocess_data(df):    
-    # Handle missing values if any
+def load_and_preprocess_data(df):
+    """Preprocess data and handle class imbalance"""
     df = df.dropna()
     
-    # Separate features and targets
+    # Basic models features
     X = df[['pressure', 'flow_rate', 'temperature']]
     y_leak = df['leak_status']
     y_burst = df['burst_status']
     
-    # Scale features
     scaler = StandardScaler()
     X_scaled = scaler.fit_transform(X)
     
-    # Custom oversampling function
     def random_oversample(X, y):
-        # Count number of samples in each class
         unique, counts = np.unique(y, return_counts=True)
         max_count = max(counts)
         
-        # For each class that needs oversampling
-        resampled_X = []
-        resampled_y = []
+        resampled_X, resampled_y = [], []
         
         for class_val in unique:
-            # Get indices of current class
             class_indices = np.where(y == class_val)[0]
             current_count = len(class_indices)
             
-            # If minority class
             if current_count < max_count:
-                # Calculate how many samples to add
-                num_to_add = max_count - current_count
-                
-                # Randomly select samples with replacement
-                indices_to_add = np.random.choice(class_indices, size=num_to_add, replace=True)
-                
-                # Add to resampled data
+                indices_to_add = np.random.choice(class_indices, 
+                                                 size=max_count-current_count, 
+                                                 replace=True)
                 resampled_X.append(X[indices_to_add])
                 resampled_y.append(y[indices_to_add])
             
-            # Always add original samples
             resampled_X.append(X[class_indices])
             resampled_y.append(y[class_indices])
         
-        # Combine all samples
         return np.vstack(resampled_X), np.concatenate(resampled_y)
     
-    # Apply oversampling to both targets
+    # Apply oversampling
     X_res_leak, y_leak_res = random_oversample(X_scaled, y_leak)
     X_res_burst, y_burst_res = random_oversample(X_scaled, y_burst)
     
-    # Split leak data
+    # Split data
     X_train_leak, X_test_leak, y_leak_train, y_leak_test = train_test_split(
         X_res_leak, y_leak_res, test_size=0.2, random_state=42
     )
     
-    # Split burst data
     X_train_burst, X_test_burst, y_burst_train, y_burst_test = train_test_split(
         X_res_burst, y_burst_res, test_size=0.2, random_state=42
     )
@@ -116,81 +123,71 @@ def load_and_preprocess_data(df):
         'y_leak_train': y_leak_train, 'y_leak_test': y_leak_test,
         'X_train_burst': X_train_burst, 'X_test_burst': X_test_burst,
         'y_burst_train': y_burst_train, 'y_burst_test': y_burst_test,
-        'scaler': scaler
+        'scaler': scaler,
+        'df': df  # Include full dataframe for spatial model
     }
-    
-training_data=load_and_preprocess_data(df)
 
 def train_and_evaluate_models(data):
-    # 1. Initialize models with stricter parameters to prevent overfitting
-    leak_model = RandomForestClassifier(
-        n_estimators=50,  # Reduced from 100
-        max_depth=5,      # Added depth limit
-        min_samples_split=10,  # Increased from default 2
-        random_state=42
-    )
+    """Train and evaluate all models"""
+    model_params = {
+        'n_estimators': 50,
+        'max_depth': 5,
+        'min_samples_split': 10,
+        'random_state': 42,
+        'class_weight': 'balanced'
+    }
     
-    burst_model = RandomForestClassifier(
-        n_estimators=50,
-        max_depth=5,
-        min_samples_split=10,
-        random_state=42
+    # Basic models
+    leak_model = RandomForestClassifier(**model_params)
+    burst_model = RandomForestClassifier(**model_params)
+    
+    # Spatial model
+    spatial_features = ['pressure', 'flow_rate', 'temperature',
+                      'latitude', 'longitude', 'pipe_age', 'pipe_material']
+    
+    preprocessor = ColumnTransformer([
+        ('num', StandardScaler(), ['pressure', 'flow_rate', 'temperature', 'pipe_age']),
+        ('cat', OneHotEncoder(), ['pipe_material'])
+    ])
+    
+    spatial_model = make_pipeline(
+        preprocessor,
+        RandomForestClassifier(**model_params)
     )
 
-    # 2. Add cross-validation
-    from sklearn.model_selection import cross_val_score
-    leak_cv_scores = cross_val_score(leak_model, data['X_train_leak'], data['y_leak_train'], 
-                                   cv=5, scoring='f1')
-    print(f"Leak Model CV F1 Scores: {leak_cv_scores}")
-    print(f"Mean CV F1: {np.mean(leak_cv_scores):.2f}")
+    # Train and validate
+    print("Training models...")
+    for model, X, y, name in [
+        (leak_model, data['X_train_leak'], data['y_leak_train'], "Leak"),
+        (burst_model, data['X_train_burst'], data['y_burst_train'], "Burst"),
+        (spatial_model, data['df'][spatial_features], data['df']['leak_status'], "Spatial")
+    ]:
+        scores = cross_val_score(model, X, y, cv=5, scoring='f1')
+        model.fit(X, y)
+        print(f"{name} Model - Mean CV F1: {np.mean(scores):.2f}")
 
-    # 3. Train and evaluate with additional diagnostics
-    leak_model.fit(data['X_train_leak'], data['y_leak_train'])
-    leak_pred = leak_model.predict(data['X_test_leak'])
+    # Save models
+    model_dir = ROOT / "ml_models"
+    model_dir.mkdir(exist_ok=True)
     
-    burst_model.fit(data['X_train_burst'], data['y_burst_train'])
-    burst_pred = burst_model.predict(data['X_test_burst'])
+    joblib.dump(leak_model, model_dir/'leak_model.sav')
+    joblib.dump(burst_model, model_dir/'burst_model.sav')
+    joblib.dump(spatial_model, model_dir/'spatial_model.sav')
+    joblib.dump(data['scaler'], model_dir/'scaler.sav')
+    
+    return leak_model, burst_model, spatial_model
 
-    # 4. Enhanced evaluation
-    def extended_evaluation(y_true, y_pred, model_name):
-        print(f"\n{model_name} Performance:")
-        print(classification_report(y_true, y_pred))
-        
-        # Confusion matrix plot
-        '''
-        cm = confusion_matrix(y_true, y_pred)
-        plt.figure()
-        plt.imshow(cm, interpolation='nearest', cmap=plt.cm.Blues)
-        plt.title(f'{model_name} Confusion Matrix')
-        plt.colorbar()
-        plt.xticks([0,1], ['No', 'Yes'])
-        plt.yticks([0,1], ['No', 'Yes'])
-        plt.xlabel('Predicted')
-        plt.ylabel('True')
-        
-        # Add feature importance plot
-        plt.figure()
-        if hasattr(leak_model, 'feature_importances_'):
-            importances = leak_model.feature_importances_
-            plt.barh(range(len(importances)), importances, tick_label=['Pressure', 'Flow Rate', 'Temperature'])
-            plt.title(f'{model_name} Feature Importance')
-        plt.show()
-        '''
-    extended_evaluation(data['y_leak_test'], leak_pred, "Leak Detection")
-    extended_evaluation(data['y_burst_test'], burst_pred, "Burst Prediction")
-
-    # 5. Save models only if not overfit
-    if np.mean(leak_cv_scores) < 0.95:  # Reasonable threshold
-        joblib.dump(leak_model, 'ml_models/leak_model.sav')
-        joblib.dump(burst_model, 'ml_models/burst_model.sav')
-        joblib.dump(data['scaler'], 'ml_models/scaler.sav')
-    else:
-        print("\nWARNING: Potential overfitting detected - models not saved!")
-        print("Recommended actions:")
-        print("- Check for data leakage")
-        print("- Add more regularization")
-        print("- Collect more diverse training data")
-
-    return leak_model, burst_model
-
-train_and_evaluate_models(training_data)
+# Main execution
+if __name__ == "__main__":
+    print('Generating dataset...')
+    df = generate_water_data(10000)  # Reduced from 100k for quicker testing
+    
+    print('Saving dataset...')
+    (ROOT / "datasets").mkdir(exist_ok=True)
+    df.to_csv(ROOT/"datasets"/"water_data.csv", index=False)
+    
+    print('Preprocessing data...')
+    training_data = load_and_preprocess_data(df)
+    
+    print('Training models...')
+    models = train_and_evaluate_models(training_data)

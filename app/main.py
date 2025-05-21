@@ -1,151 +1,121 @@
-from datetime import datetime, time
-from pathlib import Path
+from datetime import datetime
 import streamlit as st
-import plotly.express as px
 import pandas as pd
 import joblib
 import numpy as np
-from time import sleep
 import plotly.graph_objects as go
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import classification_report, confusion_matrix
-import matplotlib.pyplot as plt
-import numpy as np
-import joblib
+import folium
+from streamlit_folium import st_folium
+from pathlib import Path
 
-def load_models():    
+# Configuration
+ROOT = Path(r'C:\Users\Ngqabutho Moyo\Documents\Extra Curriculars\Leak Detection (Anesu)\Streamlit dashboard\app')
+
+@st.cache_resource
+def load_models():
+    """Load trained models with caching"""
     return (
-        joblib.load('ml_models/leak_model.sav'),
-        joblib.load('ml_models/burst_model.sav'),
-        joblib.load('ml_models/scaler.sav')
+        joblib.load(ROOT/'ml_models/leak_model.sav'),
+        joblib.load(ROOT/'ml_models/burst_model.sav'),
+        joblib.load(ROOT/'ml_models/spatial_model.sav'),
+        joblib.load(ROOT/'ml_models/scaler.sav')
     )
 
-leak_model, burst_model, scaler = load_models()
-df = pd.read_csv('datasets/water_data.csv')
+@st.cache_data
+def load_data():
+    """Load and cache water data"""
+    return pd.read_csv(ROOT/'datasets/water_data.csv')
 
-# Title
+# Load models and data
+try:
+    leak_model, burst_model, spatial_model, scaler = load_models()
+    df = load_data()
+    spatial_features = ['pressure', 'flow_rate', 'temperature',
+                      'latitude', 'longitude', 'pipe_age', 'pipe_material']
+except Exception as e:
+    st.error(f"Failed to load models/data: {str(e)}")
+    st.stop()
+
+# Initialize session state
+if 'last_sample' not in st.session_state:
+    st.session_state.last_sample = df.sample(1).iloc[0]
+    
+if 'map_sample' not in st.session_state:
+    st.session_state.map_sample = df.sample(500)
+    st.session_state.map_sample['leak_risk'] = spatial_model.predict_proba(
+        st.session_state.map_sample[spatial_features])[:,1]
+    st.session_state.map_sample['burst_risk'] = burst_model.predict_proba(
+        st.session_state.map_sample[['pressure', 'flow_rate', 'temperature']])[:,1]
+
+# Title and tabs
 st.title('Smart Water Management System')
-
-# Tabs
-tab1, tab2, tab3 = st.tabs([
-    "Real-time monitoring", 
+tab1, tab2, tab3, tab4 = st.tabs([
+    "Real-time Monitoring", 
     "Leak Predictions", 
-    "Burst Predictions"
+    "Burst Predictions",
+    "Risk Location Map"
 ])
 
-if 'last_update' not in st.session_state:
-    st.session_state.last_update = datetime.now()
-    st.session_state.current_sample = df.sample(1).iloc[0]
+# Threshold configurations
+THRESHOLDS = {
+    'pressure': {'safe': 4, 'danger': 4.5},
+    'flow_rate': {'safe': 180, 'danger': 190},
+    'temperature': {'safe': 25, 'danger': 28},
+    'leak': 0.4,
+    'burst': 0.4
+}
 
-# Tab 1: Real-time monitoring
+RANGES = {
+    'pressure': {'min': 0, 'max': 5, 'unit': 'bar'},
+    'flow_rate': {'min': 0, 'max': 200, 'unit': 'L/s'},
+    'temperature': {'min': 10, 'max': 30, 'unit': '°C'}
+}
 
+def get_gauge_color(value, param):
+    """Determine gauge color based on thresholds"""
+    if value >= THRESHOLDS[param]['danger']:
+        return "#FF0000"  # Red for danger
+    elif value >= THRESHOLDS[param]['safe']:
+        return "#FFA500"  # Orange for warning
+    return "#2ca02c"  # Green for safe
 
+# Tab 1: Real-time Monitoring
 with tab1:
     st.header("Current Sensor Readings")
-    
-    # Define safe thresholds (adjust these values as needed)
-    thresholds = {
-        'pressure': {'safe': 4, 'danger': 4.5},
-        'flow_rate': {'safe': 180, 'danger': 190},
-        'temperature': {'safe': 25, 'danger': 28}
-    }
     
     if st.button("Refresh Data"):
         st.session_state.last_sample = df.sample(1).iloc[0]
         st.rerun()
     
-    sample = st.session_state.last_sample if 'last_sample' in st.session_state else df.sample(1).iloc[0]
+    sample = st.session_state.last_sample
     
-    # Define ranges
-    ranges = {
-        'pressure': {'min': 0, 'max': 5, 'unit': 'bar'},
-        'flow_rate': {'min': 0, 'max': 200, 'unit': 'L/s'},
-        'temperature': {'min': 10, 'max': 30, 'unit': '°C'}
-    }
+    # Create gauge columns
+    cols = st.columns(3)
+    for i, param in enumerate(['pressure', 'flow_rate', 'temperature']):
+        with cols[i]:
+            fig = go.Figure(go.Indicator(
+                mode="gauge+number",
+                value=sample[param],
+                domain={'x': [0, 1], 'y': [0, 1]},
+                title={'text': f"{param.title()} ({RANGES[param]['unit']})"},
+                gauge={
+                    'axis': {'range': [None, RANGES[param]['max']]},
+                    'bar': {'color': get_gauge_color(sample[param], param)},
+                    'steps': [
+                        {'range': [0, THRESHOLDS[param]['safe']], 'color': "white"},
+                        {'range': [THRESHOLDS[param]['safe'], THRESHOLDS[param]['danger']], 'color': "lightyellow"}
+                    ],
+                    'threshold': {
+                        'line': {'color': "red", 'width': 4},
+                        'thickness': 0.8,
+                        'value': THRESHOLDS[param]['safe']}
+                }
+            ))
+            st.plotly_chart(fig, use_container_width=True)
     
-    # Create 3 columns for gauges
-    col1, col2, col3 = st.columns(3)
-    
-    def get_gauge_color(value, param):
-        if value >= thresholds[param]['danger']:
-            return "#FF0000"  # Bright red for danger
-        elif value >= thresholds[param]['safe']:
-            return "#FFA500"  # Orange for warning
-        else:
-            return "#2ca02c"  # Green for safe
-    
-    # Pressure Gauge
-    with col1:
-        fig = go.Figure(go.Indicator(
-            mode = "gauge+number+delta",
-            value = sample['pressure'],
-            domain = {'x': [0, 1], 'y': [0, 1]},
-            title = {'text': f"Pressure ({ranges['pressure']['unit']})"},
-            gauge = {
-                'axis': {'range': [None, ranges['pressure']['max']], 'tickwidth': 1},
-                'bar': {'color': get_gauge_color(sample['pressure'], 'pressure')},
-                'steps': [
-                    {'range': [0, thresholds['pressure']['safe']], 'color': "white"},
-                    {'range': [thresholds['pressure']['safe'], thresholds['pressure']['danger']], 'color': "lightyellow"}
-                ],
-                'threshold': {
-                    'line': {'color': "red", 'width': 4},
-                    'thickness': 0.75,
-                    'value': thresholds['pressure']['safe']}  # Warning threshold
-            }
-        ))
-        fig.update_layout(margin=dict(t=50, b=10))
-        st.plotly_chart(fig, use_container_width=True)
-    
-    # Flow Rate Gauge
-    with col2:
-        fig = go.Figure(go.Indicator(
-            mode = "gauge+number+delta",
-            value = sample['flow_rate'],
-            domain = {'x': [0, 1], 'y': [0, 1]},
-            title = {'text': f"Flow Rate ({ranges['flow_rate']['unit']})"},
-            gauge = {
-                'axis': {'range': [None, ranges['flow_rate']['max']], 'tickwidth': 1},
-                'bar': {'color': get_gauge_color(sample['flow_rate'], 'flow_rate')},
-                'steps': [
-                    {'range': [0, thresholds['flow_rate']['safe']], 'color': "white"},
-                    {'range': [thresholds['flow_rate']['safe'], thresholds['flow_rate']['danger']], 'color': "lightyellow"}
-                ],
-                'threshold': {
-                    'line': {'color': "red", 'width': 4},
-                    'thickness': 0.75,
-                    'value': 180}
-            }
-        ))
-        fig.update_layout(margin=dict(t=50, b=10))
-        st.plotly_chart(fig, use_container_width=True)
-    
-    # Temperature Gauge
-    with col3:
-        fig = go.Figure(go.Indicator(
-            mode = "gauge+number+delta",
-            value = sample['temperature'],
-            domain = {'x': [0, 1], 'y': [0, 1]},
-            title = {'text': f"Temperature ({ranges['temperature']['unit']})"},
-            gauge = {
-                'axis': {'range': [None, ranges['temperature']['max']], 'tickwidth': 1},
-                'bar': {'color': get_gauge_color(sample['temperature'], 'temperature')},
-                'steps': [
-                    {'range': [0, thresholds['temperature']['safe']], 'color': "white"},
-                    {'range': [thresholds['temperature']['safe'], thresholds['temperature']['danger']], 'color': "lightyellow"}
-                ],
-                'threshold': {
-                    'line': {'color': "red", 'width': 4},
-                    'thickness': 0.75,
-                    'value': thresholds['temperature']['safe']}
-            }
-        ))
-        fig.update_layout(margin=dict(t=50, b=10))
-        st.plotly_chart(fig, use_container_width=True)
-        
-    st.caption(f"Last updated: {datetime.now().strftime('%H:%M:%S')}")
+    st.caption(f"Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
-# Tab 2: Leak predictions
+# Tab 2: Leak Predictions
 with tab2:
     st.header("Leak Detection Analysis")
     sample = df.sample(1)
@@ -153,56 +123,113 @@ with tab2:
     proba = leak_model.predict_proba(features)[0][1]
     
     fig = go.Figure(go.Indicator(
-        mode = "gauge+number",
-        value = proba*100,
-        domain = {'x': [0, 1], 'y': [0, 1]},
-        title = {'text': "Leak Probability (%)"},
-        gauge = {
-            'axis': {'range': [0, 100], 'tickwidth': 1},
+        mode="gauge+number",
+        value=proba*100,
+        domain={'x': [0, 1], 'y': [0, 1]},
+        title={'text': "Leak Probability (%)"},
+        gauge={
+            'axis': {'range': [0, 100]},
             'bar': {'color': "#2ca02c"},
             'steps': [
                 {'range': [0, 40], 'color': "white"},
                 {'range': [40, 70], 'color': "lightyellow"},
                 {'range': [70, 100], 'color': "red"}
             ],
+            'threshold': {'line': {'color': "red", 'width': 4}, 'value': THRESHOLDS['leak']*100}
         }
     ))
     st.plotly_chart(fig, use_container_width=True)
     
-    if proba > 0.4:
-        st.error(f'ALERT: {proba:.2%} leak risk', icon="⚠️")
-        # st.progress(proba)
+    if proba > THRESHOLDS['leak']:
+        st.error(f"ALERT: {proba:.1%} leak risk detected", icon="⚠️")
     else:
-        st.success('No leak detected', icon="✅")
+        st.success("No leak detected", icon="✅")
 
-# Tab 3: Burst predictions
+# Tab 3: Burst Predictions
 with tab3:
     st.header("Pipe Burst Prediction")
     sample = df.sample(1)
-    
-    # Ensure correct column names match your model training
     features = scaler.transform(sample[['pressure', 'flow_rate', 'temperature']])
     proba = burst_model.predict_proba(features)[0][1]
     
     fig = go.Figure(go.Indicator(
-        mode = "gauge+number",
-        value = proba*100,
-        domain = {'x': [0, 1], 'y': [0, 1]},
-        title = {'text': "Burst Probability (%)"},
-        gauge = {
-            'axis': {'range': [0, 100], 'tickwidth': 1},
+        mode="gauge+number",
+        value=proba*100,
+        domain={'x': [0, 1], 'y': [0, 1]},
+        title={'text': "Burst Probability (%)"},
+        gauge={
+            'axis': {'range': [0, 100]},
             'bar': {'color': "#2ca02c"},
             'steps': [
                 {'range': [0, 40], 'color': "white"},
                 {'range': [40, 70], 'color': "lightyellow"},
                 {'range': [70, 100], 'color': "red"}
             ],
+            'threshold': {'line': {'color': "red", 'width': 4}, 'value': THRESHOLDS['burst']*100}
         }
     ))
     st.plotly_chart(fig, use_container_width=True)
     
-    if proba > 0.4:
-        st.error(f'ALERT: {proba:.2%} burst risk', icon="⚠️")
-        # st.progress(proba)
+    if proba > THRESHOLDS['burst']:
+        st.error(f"💥 CRITICAL: {proba:.1%} burst risk detected", icon="🚨")
     else:
-        st.success('No burst detected', icon="✅")
+        st.success("No burst detected", icon="✅")
+
+# Tab 4: Risk Location Map
+with tab4:
+    st.header("Risk Location Map")
+    
+    # Sample size selector
+    # col1, col2 = st.columns([2, 1])
+    # with col1:
+    #     if st.button("Resample Data"):
+    #         st.session_state.map_sample = df.sample(500)
+    #         st.session_state.map_sample['leak_risk'] = spatial_model.predict_proba(
+    #             st.session_state.map_sample[spatial_features])[:,1]
+    #         st.session_state.map_sample['burst_risk'] = burst_model.predict_proba(
+    #             st.session_state.map_sample[['pressure', 'flow_rate', 'temperature']])[:,1]
+    #         st.rerun()
+    
+    # Create map with cached sample
+    map_df = st.session_state.map_sample
+    m = folium.Map(
+        location=[map_df['latitude'].mean(), map_df['longitude'].mean()],
+        zoom_start=14,
+        tiles="CartoDB positron"
+    )
+    
+    # Add markers
+    for _, row in map_df.iterrows():
+        risk_color = 'red' if row['leak_risk'] > 0.7 else 'orange' if row['leak_risk'] > 0.4 else 'green'
+        
+        folium.CircleMarker(
+            location=[row['latitude'], row['longitude']],
+            radius=8,
+            color=risk_color,
+            fill=True,
+            popup=f"""
+            <strong>Pipe ID:</strong> {row['pipe_id']}<br>
+            <strong>Leak Risk:</strong> {row['leak_risk']:.1%}<br>
+            <strong>Burst Risk:</strong> {row['burst_risk']:.1%}<br>
+            <strong>Age:</strong> {row['pipe_age']} years
+            """
+        ).add_to(m)
+    
+    # Display map
+    st_folium(m, width=700, height=500, key='map')
+    
+    # Legend
+    st.markdown("""
+    **Risk Legend:**
+    - <span style='color:red'>🔴 High Risk</span> (>70%)
+    - <span style='color:orange'>🟠 Medium Risk</span> (40-70%)
+    - <span style='color:green'>🟢 Low Risk</span> (<40%)
+    """, unsafe_allow_html=True)
+    
+    if st.button("Resample Data"):
+            st.session_state.map_sample = df.sample(1000)
+            st.session_state.map_sample['leak_risk'] = spatial_model.predict_proba(
+                st.session_state.map_sample[spatial_features])[:,1]
+            st.session_state.map_sample['burst_risk'] = burst_model.predict_proba(
+                st.session_state.map_sample[['pressure', 'flow_rate', 'temperature']])[:,1]
+            st.rerun()
