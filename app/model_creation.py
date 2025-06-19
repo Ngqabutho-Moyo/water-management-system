@@ -163,6 +163,7 @@ def train_and_evaluate_models(data):
         (spatial_model, data['df'][spatial_features], data['df']['leak_status'], "Spatial")
     ]:
         scores = cross_val_score(model, X, y, cv=5, scoring='f1')
+        print(f'Model scores: {scores}')
         model.fit(X, y)
         print(f"{name} Model - Mean CV F1: {np.mean(scores):.2f}")
 
