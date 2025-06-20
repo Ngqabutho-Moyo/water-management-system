@@ -13,8 +13,11 @@ from sklearn.pipeline import make_pipeline
 from sklearn.compose import ColumnTransformer
 from sklearn.preprocessing import OneHotEncoder
 from sklearn.model_selection import cross_val_score
+from pathlib import Path
 
 fake = Faker()
+model_path = str(Path(__file__).parent)
+print(model_path[-13:])
 
 # Harare bounding coordinates
 HARARE_BOUNDS = {
@@ -25,7 +28,7 @@ HARARE_BOUNDS = {
 }
 
 # Updated to use relative path
-ROOT = Path(__file__).parent
+ROOT = model_path[-13:]
 
 def generate_water_data(num_samples=1000):
     """Generate synthetic water data with spatial features"""
