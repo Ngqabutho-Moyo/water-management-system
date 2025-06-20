@@ -8,8 +8,8 @@ import folium
 from streamlit_folium import st_folium
 from pathlib import Path
 
-# Configuration
-ROOT = Path(r'C:\Users\Ngqabutho Moyo\Documents\Extra Curriculars\Leak Detection (Anesu)\Streamlit dashboard\app')
+# Configuration - Updated to use relative path
+ROOT = Path(__file__).parent
 
 @st.cache_resource
 def load_models():

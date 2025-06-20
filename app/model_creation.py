@@ -24,7 +24,8 @@ HARARE_BOUNDS = {
     'max_lon': 31.15
 }
 
-ROOT = Path(r'C:\Users\Ngqabutho Moyo\Documents\Extra Curriculars\Leak Detection (Anesu)\Streamlit dashboard\app')
+# Updated to use relative path
+ROOT = Path(__file__).parent
 
 def generate_water_data(num_samples=1000):
     """Generate synthetic water data with spatial features"""
