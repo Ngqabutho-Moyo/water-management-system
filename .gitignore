@@ -1,3 +1,12 @@
-env/
 *.sh
 test*
+env/               # Python virtual environment
+__pycache__/       # Python cache
+*.pyc              # Compiled Python files
+.DS_Store          # macOS metadata
+.venv              # Common virtual env folder
+.ipynb_checkpoints # Jupyter notebooks
+
+# DO NOT IGNORE THESE (remove if present):
+!app/ml_models/    # Force-include models
+!app/datasets/     # Force-include datasets
